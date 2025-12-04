@@ -110,6 +110,7 @@ pub async fn process_message_images(
                                     image_url.url, response.attachment_url
                                 );
                                 image_url.url = response.attachment_url.clone();
+                                image_url.mime_type = response.mime_type.clone();
                             }
                         }
                     }
@@ -130,13 +131,14 @@ pub async fn process_message_images(
         debug!("🔄 準備處理 {} 個data URL", data_urls.len());
 
         // 分為緩存命中和未命中兩組
-        let mut data_to_upload = Vec::new();
-        let mut data_indices_to_upload = Vec::new();
-        let mut data_hashes = Vec::new();
+    let mut data_to_upload = Vec::new();
+    let mut data_indices_to_upload = Vec::new();
+    let mut data_mime_types: Vec<Option<String>> = Vec::new();
+    let mut data_hashes = Vec::new();
 
-        for (idx, (msg_idx, item_idx)) in data_url_indices.iter().enumerate() {
-            let data_url = &data_urls[idx];
-            let hash = hash_base64_content(data_url);
+    for (idx, (msg_idx, item_idx)) in data_url_indices.iter().enumerate() {
+        let data_url = &data_urls[idx];
+        let hash = hash_base64_content(data_url);
 
             debug!("🔍 計算data URL哈希值 | 哈希頭部: {}...", &hash[..8]);
 
@@ -179,6 +181,8 @@ pub async fn process_message_images(
                     None
                 };
 
+                data_mime_types.push(mime_type.clone());
+
                 match handle_data_url_to_temp_file(data_url) {
                     Ok(file_path) => {
                         debug!("📄 創建臨時文件成功: {}", file_path.display());
@@ -212,12 +216,15 @@ pub async fn process_message_images(
 
                         // 更新緩存並保存URL映射
                         for (idx, response) in responses.iter().enumerate() {
-                            let (_, (msg_idx, item_idx)) = data_indices_to_upload[idx];
-                            let hash = &data_hashes[idx];
-                            let data_url = &data_to_upload[idx];
+                        let (_, (msg_idx, item_idx)) = data_indices_to_upload[idx];
+                        let hash = &data_hashes[idx];
+                        let data_url = &data_to_upload[idx];
+                        let original_mime = data_mime_types
+                            .get(idx)
+                            .and_then(|m| m.clone());
 
-                            // 估算大小
-                            let size = crate::cache::estimate_base64_size(data_url);
+                        // 估算大小
+                        let size = crate::cache::estimate_base64_size(data_url);
 
                             // 添加到緩存
                             crate::cache::cache_base64(hash, &response.attachment_url, size);
@@ -236,6 +243,10 @@ pub async fn process_message_images(
                                 {
                                     debug!("🔄 替換data URL | Poe: {}", response.attachment_url);
                                     image_url.url = response.attachment_url.clone();
+                                    image_url.mime_type = response
+                                        .mime_type
+                                        .clone()
+                                        .or_else(|| original_mime.clone());
                                 }
                             }
                         }
@@ -300,7 +311,10 @@ pub async fn process_message_images(
                         items.push(OpenAiContentItem::Text { text: text.clone() });
                         for url in poe_cdn_urls {
                             items.push(OpenAiContentItem::ImageUrl {
-                                image_url: ImageUrlContent { url },
+                                image_url: ImageUrlContent {
+                                    url,
+                                    mime_type: None,
+                                },
                             });
                         }
                         user_msg.content = Some(OpenAiContent::Multi(items));
@@ -309,7 +323,10 @@ pub async fn process_message_images(
                         // 已經是多部分消息，直接添加圖片
                         for url in poe_cdn_urls {
                             items.push(OpenAiContentItem::ImageUrl {
-                                image_url: ImageUrlContent { url },
+                                image_url: ImageUrlContent {
+                                    url,
+                                    mime_type: None,
+                                },
                             });
                         }
                     }
@@ -318,7 +335,10 @@ pub async fn process_message_images(
                         let mut items = Vec::new();
                         for url in poe_cdn_urls {
                             items.push(OpenAiContentItem::ImageUrl {
-                                image_url: ImageUrlContent { url },
+                                image_url: ImageUrlContent {
+                                    url,
+                                    mime_type: None,
+                                },
                             });
                         }
                         user_msg.content = Some(OpenAiContent::Multi(items));
@@ -660,6 +680,62 @@ pub fn hash_base64_content(base64_str: &str) -> String {
     );
 
     hash
+}
+
+/// 根據 URL 推斷 MIME 類型
+pub fn infer_mime_from_url(url: &str) -> Option<String> {
+    let without_query = url.split('?').next().unwrap_or(url).to_lowercase();
+    let ext = without_query.split('.').last().unwrap_or("");
+    let mime = match ext {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        "pdf" => Some("application/pdf"),
+        "txt" => Some("text/plain"),
+        "json" => Some("application/json"),
+        "csv" => Some("text/csv"),
+        "mp4" => Some("video/mp4"),
+        "mp3" => Some("audio/mpeg"),
+        _ => None,
+    };
+
+    // 一些 Poe CDN 圖片沒有副檔名，嘗試根據路徑特徵給預設
+    if mime.is_none() && url.contains("/base/image/") {
+        return Some("image/jpeg".to_string());
+    }
+
+    mime.map(|m| m.to_string())
+}
+
+/// 根據 URL 或 MIME 類型生成檔名
+pub fn filename_from_url(url: &str, mime_type: Option<&str>) -> Option<String> {
+    let without_query = url.split('?').next().unwrap_or(url);
+    let last = without_query.split('/').last().unwrap_or("").trim();
+    if !last.is_empty() && !last.ends_with("image") && !last.ends_with("base") {
+        return Some(last.to_string());
+    }
+
+    if let Some(mt) = mime_type {
+        let ext = match mt {
+            "image/jpeg" => "jpg",
+            "image/png" => "png",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            "image/bmp" => "bmp",
+            "image/svg+xml" => "svg",
+            "application/pdf" => "pdf",
+            "text/plain" => "txt",
+            "application/json" => "json",
+            "text/csv" => "csv",
+            _ => "bin",
+        };
+        return Some(format!("file.{}", ext));
+    }
+
+    None
 }
 
 /// 處理消息內容，根據請求參數添加相應的後綴

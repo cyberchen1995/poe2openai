@@ -1,7 +1,10 @@
 use crate::{
     cache::get_cached_config,
     types::*,
-    utils::{extract_tool_call_id, filter_tools_for_poe, get_text_from_openai_content},
+    utils::{
+        extract_tool_call_id, filename_from_url, filter_tools_for_poe,
+        get_text_from_openai_content, infer_mime_from_url,
+    },
 };
 use futures_util::Stream;
 use poe_api_process::types::Attachment;
@@ -122,10 +125,15 @@ fn openai_message_to_poe(
                         OpenAiContentItem::Text { text } => texts.push(text.clone()),
                         OpenAiContentItem::ImageUrl { image_url } => {
                             debug!("🖼️  處理圖片 URL: {}", image_url.url);
+                            let mime = image_url
+                                .mime_type
+                                .clone()
+                                .or_else(|| infer_mime_from_url(&image_url.url));
+                            let filename = filename_from_url(&image_url.url, mime.as_deref());
                             attachments.push(Attachment {
                                 url: image_url.url.clone(),
-                                content_type: None,
-                                name: None,
+                                content_type: mime,
+                                name: filename,
                                 inline_ref: None,
                                 parsed_content: None,
                             });
@@ -316,7 +324,7 @@ pub async fn create_chat_request(
         }
     }
     ChatRequest {
-        version: "1.1".to_string(),
+        version: "1.2".to_string(),
         r#type: "query".to_string(),
         query,
         temperature,

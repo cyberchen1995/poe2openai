@@ -75,6 +75,8 @@ pub enum OpenAiContentItem {
 #[derive(Debug, Deserialize, Clone)]
 pub struct ImageUrlContent {
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime_type: Option<String>,
     // 可擴展其他欄位如 detail 等
 }
 
