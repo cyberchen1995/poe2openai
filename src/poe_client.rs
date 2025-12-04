@@ -125,6 +125,9 @@ fn openai_message_to_poe(
                             attachments.push(Attachment {
                                 url: image_url.url.clone(),
                                 content_type: None,
+                                name: None,
+                                inline_ref: None,
+                                parsed_content: None,
                             });
                         }
                     }

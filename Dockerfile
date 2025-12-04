@@ -78,4 +78,4 @@ EXPOSE ${PORT}
 # 設定標籤
 LABEL maintainer="Jerome Leong <jeromeleong1998@gmail.com>" \
     description="Poe API to OpenAI API 轉換服務" \
-    version="0.7.4"
+    version="0.7.5"
